@@ -8,8 +8,12 @@ namespace DarkMultiPlayerServer.Messages
 {
     public class WarpControl
     {
+        private static int freeID;
         private static Dictionary<int, Subspace> subspaces = new Dictionary<int, Subspace>();
         private static Dictionary<string, int> playerSubspace = new Dictionary<string, int>();
+        private static object createLock = new object();
+
+        private const float MAX_WARP_TIME = 120f;
 
         public static void SendAllReportedSkewRates(ClientObject client)
         {
@@ -37,97 +41,164 @@ namespace DarkMultiPlayerServer.Messages
 
         public static void HandleWarpControl(ClientObject client, byte[] messageData)
         {
-            ServerMessage newMessage = new ServerMessage();
-            newMessage.type = ServerMessageType.WARP_CONTROL;
-            newMessage.data = messageData;
             using (MessageReader mr = new MessageReader(messageData))
             {
                 WarpMessageType warpType = (WarpMessageType)mr.Read<int>();
-                string fromPlayer = mr.Read<string>();
-                if (fromPlayer == client.playerName)
+                switch (warpType)
                 {
-                    if (warpType == WarpMessageType.NEW_SUBSPACE)
-                    {
-                        int newSubspaceID = mr.Read<int>();
-                        if (subspaces.ContainsKey(newSubspaceID))
+                    case WarpMessageType.NEW_SUBSPACE:
                         {
-                            DarkLog.Debug("Kicked for trying to create an existing subspace");
-                            Messages.ConnectionEnd.SendConnectionEnd(client, "Kicked for trying to create an existing subspace");
-                            return;
+                            long serverTime = mr.Read<long>();
+                            double planetTime = mr.Read<double>();
+                            float subspaceRate = mr.Read<float>();
+                            HandleNewSubspace(client, serverTime, planetTime, subspaceRate);
                         }
-                        else
+                        break;
+                    case WarpMessageType.CHANGE_SUBSPACE:
                         {
-                            Subspace newSubspace = new Subspace();
-                            newSubspace.serverClock = mr.Read<long>();
-                            newSubspace.planetTime = mr.Read<double>();
-                            newSubspace.subspaceSpeed = mr.Read<float>();
-                            subspaces.Add(newSubspaceID, newSubspace);
-                            client.subspace = newSubspaceID;
-                            SaveLatestSubspace();
+                            int newSubspace = mr.Read<int>();
+                            HandleChangeSubspace(client, newSubspace);
                         }
-                    }
-                    if (warpType == WarpMessageType.CHANGE_SUBSPACE)
-                    {
-                        client.subspace = mr.Read<int>();
-                    }
-                    if (warpType == WarpMessageType.REPORT_RATE)
-                    {
-                        int reportedSubspace = mr.Read<int>();
-                        if (client.subspace != reportedSubspace)
+                        break;
+                    case WarpMessageType.REPORT_RATE:
                         {
-                            DarkLog.Debug("Warning, setting client " + client.playerName + " to subspace " + client.subspace);
-                            client.subspace = reportedSubspace;
+                            float newSubspaceRate = mr.Read<float>();
+                            HandleReportRate(client, newSubspaceRate);
                         }
-                        float newSubspaceRate = mr.Read<float>();
-                        client.subspaceRate = newSubspaceRate;
-                        foreach (ClientObject otherClient in ClientHandler.GetClients())
+                        break;
+                    case WarpMessageType.CHANGE_WARP:
                         {
-                            if (otherClient.authenticated && otherClient.subspace == reportedSubspace)
-                            {
-                                if (newSubspaceRate > otherClient.subspaceRate)
-                                {
-                                    newSubspaceRate = otherClient.subspaceRate;
-                                }
-                            }
+                            bool physWarp = mr.Read<bool>();
+                            int rateIndex = mr.Read<int>();
+                            long serverClock = mr.Read<long>();
+                            double planetTime = mr.Read<double>();
+                            HandleChangeWarp(client, physWarp, rateIndex, serverClock, planetTime);
                         }
-                        if (newSubspaceRate < 0.3f)
-                        {
-                            newSubspaceRate = 0.3f;
-                        }
-                        if (newSubspaceRate > 1f)
-                        {
-                            newSubspaceRate = 1f;
-                        }
-                        //Relock the subspace if the rate is more than 3% out of the average
-                        if (Math.Abs(subspaces[reportedSubspace].subspaceSpeed - newSubspaceRate) > 0.03f)
-                        {
-                            UpdateSubspace(reportedSubspace);
-                            subspaces[reportedSubspace].subspaceSpeed = newSubspaceRate;
-                            ServerMessage relockMessage = new ServerMessage();
-                            relockMessage.type = ServerMessageType.WARP_CONTROL;
-                            using (MessageWriter mw = new MessageWriter())
-                            {
-                                mw.Write<int>((int)WarpMessageType.RELOCK_SUBSPACE);
-                                mw.Write<string>(Settings.settingsStore.consoleIdentifier);
-                                mw.Write<int>(reportedSubspace);
-                                mw.Write<long>(subspaces[reportedSubspace].serverClock);
-                                mw.Write<double>(subspaces[reportedSubspace].planetTime);
-                                mw.Write<float>(subspaces[reportedSubspace].subspaceSpeed);
-                                relockMessage.data = mw.GetMessageBytes();
-                            }
-                            SaveLatestSubspace();
-                            //DarkLog.Debug("Subspace " + client.subspace + " locked to " + newSubspaceRate + "x speed.");
-                            ClientHandler.SendToClient(client, relockMessage, true);
-                            ClientHandler.SendToAll(client, relockMessage, true);
-                        }
-                    }
+                        break;
+                    default:
+                        throw new NotImplementedException("Warp message");
+                }
+            }
+        }
+
+        private static void HandleNewSubspace(ClientObject client, long serverClock, double planetTime, float subspaceSpeed)
+        {
+            lock (createLock)
+            {
+                DarkLog.Debug("Create subspace");
+                //Create subspace
+                Subspace newSubspace = new Subspace();
+                newSubspace.serverClock = serverClock;
+                newSubspace.planetTime = planetTime;
+                newSubspace.subspaceSpeed = subspaceSpeed;
+                subspaces.Add(freeID, newSubspace);
+                //Create message
+                ServerMessage newMessage = new ServerMessage();
+                newMessage.type = ServerMessageType.WARP_CONTROL;
+                using (MessageWriter mw = new MessageWriter())
+                {
+                    mw.Write<int>((int)WarpMessageType.NEW_SUBSPACE);
+                    mw.Write<int>(freeID);
+                    mw.Write<long>(serverClock);
+                    mw.Write<double>(planetTime);
+                    mw.Write<float>(subspaceSpeed);
+                    newMessage.data = mw.GetMessageBytes();
+                }
+                //Tell all clients about the new subspace
+                ClientHandler.SendToAll(null, newMessage, true);
+                //Send the client to that subspace
+                if (Settings.settingsStore.warpMode == WarpMode.MCW_FORCE || Settings.settingsStore.warpMode == WarpMode.MCW_LOWEST)
+                {
+                    SendSetSubspaceToAll(freeID);
                 }
                 else
                 {
-                    DarkLog.Debug(client.playerName + " tried to send an update for " + fromPlayer + ", kicking.");
-                    Messages.ConnectionEnd.SendConnectionEnd(client, "Kicked for sending an update for another player");
-                    return;
+                    SendSetSubspace(client, freeID);
                 }
+                freeID++;
+                //Save to disk
+                SaveLatestSubspace();
+            }
+        }
+
+        private static void HandleChangeSubspace(ClientObject client, int subspace)
+        {
+            client.subspace = subspace;
+            ServerMessage newMessage = new ServerMessage();
+            newMessage.type = ServerMessageType.WARP_CONTROL;
+            using (MessageWriter mw = new MessageWriter())
+            {
+                mw.Write<int>((int)WarpMessageType.CHANGE_SUBSPACE);
+                mw.Write<string>(client.playerName);
+                mw.Write<int>(subspace);
+                newMessage.data = mw.GetMessageBytes();
+            }
+            ClientHandler.SendToAll(client, newMessage, true);
+        }
+
+        private static void HandleReportRate(ClientObject client, float newSubspaceRate)
+        {
+            int reportedSubspace = client.subspace;
+            client.subspaceRate = newSubspaceRate;
+            //Get minimum rate
+            foreach (ClientObject otherClient in ClientHandler.GetClients())
+            {
+                if (otherClient.authenticated && otherClient.subspace == reportedSubspace)
+                {
+                    if (otherClient.subspaceRate < newSubspaceRate)
+                    {
+                        newSubspaceRate = otherClient.subspaceRate;
+                    }
+                }
+            }
+            //Bound the rate
+            if (newSubspaceRate < 0.3f)
+            {
+                newSubspaceRate = 0.3f;
+            }
+            if (newSubspaceRate > 1f)
+            {
+                newSubspaceRate = 1f;
+            }
+            //Relock the subspace if the rate is more than 3% out of the average
+            if (Math.Abs(subspaces[reportedSubspace].subspaceSpeed - newSubspaceRate) > 0.03f)
+            {
+                //Update the subspace's epoch to now, so we have a new time to lock from.
+                UpdateSubspace(reportedSubspace);
+                //Change the subspace speed and report it to the clients
+                subspaces[reportedSubspace].subspaceSpeed = newSubspaceRate;
+                ServerMessage relockMessage = new ServerMessage();
+                relockMessage.type = ServerMessageType.WARP_CONTROL;
+                using (MessageWriter mw = new MessageWriter())
+                {
+                    mw.Write<int>((int)WarpMessageType.RELOCK_SUBSPACE);
+                    mw.Write<string>(Settings.settingsStore.consoleIdentifier);
+                    mw.Write<int>(reportedSubspace);
+                    mw.Write<long>(subspaces[reportedSubspace].serverClock);
+                    mw.Write<double>(subspaces[reportedSubspace].planetTime);
+                    mw.Write<float>(subspaces[reportedSubspace].subspaceSpeed);
+                    relockMessage.data = mw.GetMessageBytes();
+                }
+                ClientHandler.SendToAll(null, relockMessage, true);
+                //Save to disk
+                SaveLatestSubspace();
+
+            }
+        }
+
+        private static void HandleChangeWarp(ClientObject client, bool physWarp, int rateIndex, long serverClock, double planetTime)
+        {
+            ServerMessage newMessage = new ServerMessage();
+            newMessage.type = ServerMessageType.WARP_CONTROL;
+            using (MessageWriter mw = new MessageWriter())
+            {
+                mw.Write<int>((int)WarpMessageType.CHANGE_WARP);
+                mw.Write<string>(client.playerName);
+                mw.Write<bool>(physWarp);
+                mw.Write<int>(rateIndex);
+                mw.Write<long>(serverClock);
+                mw.Write<double>(planetTime);
+                newMessage.data = mw.GetMessageBytes();
             }
             ClientHandler.SendToAll(client, newMessage, true);
         }
@@ -142,7 +213,6 @@ namespace DarkMultiPlayerServer.Messages
                 using (MessageWriter mw = new MessageWriter())
                 {
                     mw.Write<int>((int)WarpMessageType.NEW_SUBSPACE);
-                    mw.Write<string>("");
                     mw.Write<int>(subspace.Key);
                     mw.Write<long>(subspace.Value.serverClock);
                     mw.Write<double>(subspace.Value.planetTime);
@@ -186,7 +256,6 @@ namespace DarkMultiPlayerServer.Messages
             int targetSubspace = -1;
             if (Settings.settingsStore.sendPlayerToLatestSubspace || !playerSubspace.ContainsKey(client.playerName))
             {
-                DarkLog.Debug("Sending " + client.playerName + " to the latest subspace " + targetSubspace);
                 targetSubspace = GetLatestSubspace();
             }
             else
@@ -194,15 +263,34 @@ namespace DarkMultiPlayerServer.Messages
                 DarkLog.Debug("Sending " + client.playerName + " to the previous subspace " + targetSubspace);
                 targetSubspace = playerSubspace[client.playerName];
             }
-            client.subspace = targetSubspace;
+            SendSetSubspace(client, targetSubspace);
+        }
+
+        public static void SendSetSubspace(ClientObject client, int subspace)
+        {
+            DarkLog.Debug("Sending " + client.playerName + " to subspace " + subspace);
+            client.subspace = subspace;
             ServerMessage newMessage = new ServerMessage();
             newMessage.type = ServerMessageType.SET_SUBSPACE;
             using (MessageWriter mw = new MessageWriter())
             {
-                mw.Write<int>(targetSubspace);
+                mw.Write<int>(subspace);
                 newMessage.data = mw.GetMessageBytes();
             }
             ClientHandler.SendToClient(client, newMessage, true);
+        }
+
+        public static void SendSetSubspaceToAll(int subspace)
+        {
+            DarkLog.Debug("Sending everyone to subspace " + subspace);
+            ServerMessage newMessage = new ServerMessage();
+            newMessage.type = ServerMessageType.SET_SUBSPACE;
+            using (MessageWriter mw = new MessageWriter())
+            {
+                mw.Write<int>(subspace);
+                newMessage.data = mw.GetMessageBytes();
+            }
+            ClientHandler.SendToAll(null, newMessage, true);
         }
 
         private static void LoadSavedSubspace()
@@ -224,6 +312,10 @@ namespace DarkMultiPlayerServer.Messages
                     savedSubspace.planetTime = Double.Parse(sr.ReadLine().Trim());
                     savedSubspace.subspaceSpeed = Single.Parse(sr.ReadLine().Trim());
                     subspaces.Add(subspaceID, savedSubspace);
+                    lock (createLock)
+                    {
+                        freeID = subspaceID + 1;
+                    }
                 }
             }
             catch

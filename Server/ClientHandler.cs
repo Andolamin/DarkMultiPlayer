@@ -380,8 +380,10 @@ namespace DarkMultiPlayerServer
         private static void ReceiveCallback(IAsyncResult ar)
         {
             ClientObject client = (ClientObject)ar.AsyncState;
+            #if !DEBUG
             try
             {
+            #endif
                 int bytesRead = client.connection.GetStream().EndRead(ar);
                 client.bytesReceived += bytesRead;
                 client.receiveMessageBytesLeft -= bytesRead;
@@ -448,11 +450,13 @@ namespace DarkMultiPlayerServer
                     client.lastReceiveTime = Server.serverClock.ElapsedMilliseconds;
                     client.connection.GetStream().BeginRead(client.receiveMessage.data, client.receiveMessage.data.Length - client.receiveMessageBytesLeft, client.receiveMessageBytesLeft, new AsyncCallback(ReceiveCallback), client);
                 }
+            #if !DEBUG
             }
             catch (Exception e)
             {
                 HandleDisconnectException("ReceiveCallback", client, e);
             }
+            #endif
         }
 
         private static void HandleDisconnectException(string location, ClientObject client, Exception e)
@@ -551,8 +555,10 @@ namespace DarkMultiPlayerServer
                 return;
             }
 
+            #if !DEBUG
             try
             {
+            #endif
                 switch (message.type)
                 {
                     case ClientMessageType.HEARTBEAT:
@@ -629,12 +635,14 @@ namespace DarkMultiPlayerServer
                         Messages.ConnectionEnd.SendConnectionEnd(client, "Unhandled message type " + message.type);
                         break;
                 }
+            #if !DEBUG
             }
             catch (Exception e)
             {
                 DarkLog.Debug("Error handling " + message.type + " from " + client.playerName + ", exception: " + e);
                 Messages.ConnectionEnd.SendConnectionEnd(client, "Server failed to process " + message.type + " message");
             }
+            #endif
         }
 
         //Call with null client to send to all clients. Also called from Dekessler and NukeKSC.

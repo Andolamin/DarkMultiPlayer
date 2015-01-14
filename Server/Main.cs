@@ -26,9 +26,10 @@ namespace DarkMultiPlayerServer
 
         public static void Main()
         {
+            #if !DEBUG
             try
             {
-
+            #endif
                 //Start the server clock
                 serverClock = new Stopwatch();
                 serverClock.Start();
@@ -171,12 +172,14 @@ namespace DarkMultiPlayerServer
                 }
                 DarkLog.Normal("Goodbye!");
                 Environment.Exit(0);
+            #if !DEBUG
             }
             catch (Exception e)
             {
                 DarkLog.Fatal("Error in main server thread, Exception: " + e);
                 throw;
             }
+            #endif
         }
 
         // Check universe folder size

@@ -289,50 +289,14 @@ namespace DarkMultiPlayer
             return false;
         }
 
-        public int LockNewSubspace(long serverTime, double planetariumTime, float subspaceSpeed)
-        {
-            int highestSubpaceID = 0;
-            foreach (int subspaceID in subspaces.Keys)
-            {
-                if (subspaceID > highestSubpaceID)
-                {
-                    highestSubpaceID = subspaceID;
-                }
-            }
-            LockNewSubspace((highestSubpaceID + 1), serverTime, planetariumTime, subspaceSpeed);
-            return (highestSubpaceID + 1);
-        }
-
         public void LockNewSubspace(int subspaceID, long serverTime, double planetariumTime, float subspaceSpeed)
         {
-            if (!subspaces.ContainsKey(subspaceID))
-            {
-                Subspace newSubspace = new Subspace();
-                newSubspace.serverClock = serverTime;
-                newSubspace.planetTime = planetariumTime;
-                newSubspace.subspaceSpeed = subspaceSpeed;
-                subspaces.Add(subspaceID, newSubspace);
-            }
+            Subspace newSubspace = new Subspace();
+            newSubspace.serverClock = serverTime;
+            newSubspace.planetTime = planetariumTime;
+            newSubspace.subspaceSpeed = subspaceSpeed;
+            subspaces[subspaceID] = newSubspace;
             DarkLog.Debug("Subspace " + subspaceID + " locked to server, time: " + planetariumTime);
-        }
-
-        public void LockNewSubspaceToCurrentTime()
-        {
-            TimeSyncer.fetch.UnlockSubspace();
-            long serverClock = TimeSyncer.fetch.GetServerClock();
-            double universeTime = Planetarium.GetUniversalTime();
-            int newSubspace = TimeSyncer.fetch.LockNewSubspace(serverClock, universeTime, requestedRate);
-            using (MessageWriter mw = new MessageWriter())
-            {
-                mw.Write<int>((int)WarpMessageType.NEW_SUBSPACE);
-                mw.Write<string>(Settings.fetch.playerName);
-                mw.Write<int>(newSubspace);
-                mw.Write<long>(serverClock);
-                mw.Write<double>(universeTime);
-                mw.Write<float>(requestedRate);
-                NetworkWorker.fetch.SendWarpMessage(mw.GetMessageBytes());
-            }
-            TimeSyncer.fetch.LockSubspace(newSubspace);
         }
 
         public void LockSubspace(int subspaceID)
@@ -345,7 +309,6 @@ namespace DarkMultiPlayer
                 using (MessageWriter mw = new MessageWriter())
                 {
                     mw.Write<int>((int)WarpMessageType.CHANGE_SUBSPACE);
-                    mw.Write<string>(Settings.fetch.playerName);
                     mw.Write<int>(subspaceID);
                     NetworkWorker.fetch.SendWarpMessage(mw.GetMessageBytes());
                 }
