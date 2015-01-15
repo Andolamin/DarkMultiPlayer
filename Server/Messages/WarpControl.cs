@@ -8,11 +8,20 @@ namespace DarkMultiPlayerServer.Messages
 {
     public class WarpControl
     {
+        //SUBSPACE
         private static int freeID;
         private static Dictionary<int, Subspace> subspaces = new Dictionary<int, Subspace>();
         private static Dictionary<string, int> playerSubspace = new Dictionary<string, int>();
         private static object createLock = new object();
 
+        //MCW (Uses subspace internally)
+        private static string warpMaster;
+        private static string voteMaster;
+        private static Dictionary<string, bool> voteList;
+        private static object mcwLock = new object();
+
+
+        private const float MAX_VOTE_TIME = 30f;
         private const float MAX_WARP_TIME = 120f;
 
         public static void SendAllReportedSkewRates(ClientObject client)
@@ -46,6 +55,16 @@ namespace DarkMultiPlayerServer.Messages
                 WarpMessageType warpType = (WarpMessageType)mr.Read<int>();
                 switch (warpType)
                 {
+                    case WarpMessageType.REQUEST_CONTROLLER:
+                        {
+                            HandleRequestController(client);
+                        }
+                        break;
+                    case WarpMessageType.RELEASE_CONTROLLER:
+                        {
+                            HandleReleaseController(client);
+                        }
+                        break;
                     case WarpMessageType.NEW_SUBSPACE:
                         {
                             long serverTime = mr.Read<long>();
@@ -77,6 +96,56 @@ namespace DarkMultiPlayerServer.Messages
                         break;
                     default:
                         throw new NotImplementedException("Warp message");
+                }
+            }
+        }
+
+        private static void HandleRequestController(ClientObject client)
+        {
+            lock (mcwLock)
+            {
+
+                if (Settings.settingsStore.warpMode == WarpMode.MCW_FORCE)
+                {
+                    if (warpMaster == null)
+                    {
+                        warpMaster = client.playerName;
+                        long expireTime = DateTime.UtcNow.Ticks + (long)(MAX_WARP_TIME * 10000000);
+                        SendSetController(client.playerName, expireTime);
+                    }
+                }
+                if (Settings.settingsStore.warpMode == WarpMode.MCW_VOTE)
+                {
+                    if (voteMaster == null)
+                    {
+                        voteMaster = client.playerName;
+                        long expireTime = DateTime.UtcNow.Ticks + (long)(MAX_VOTE_TIME * 10000000);
+                        SendRequestVote(client.playerName, expireTime);
+                    }
+                }
+            }
+        }
+
+        private static void HandleReleaseController(ClientObject client)
+        {
+            lock (mcwLock)
+            {
+                if (Settings.settingsStore.warpMode == WarpMode.MCW_FORCE)
+                {
+                    if (warpMaster == client.playerName)
+                    {
+                        warpMaster = null;
+                        SendSetController(null, long.MinValue);
+                    }
+                }
+                if (Settings.settingsStore.warpMode == WarpMode.MCW_VOTE)
+                {
+                    if (voteMaster == client.playerName || warpMaster == client.playerName)
+                    {
+                        voteMaster = null;
+                        warpMaster = null;
+                        SendSetController(null, long.MinValue);
+                    }
                 }
             }
         }
@@ -240,6 +309,40 @@ namespace DarkMultiPlayerServer.Messages
             }
         }
 
+        private static void SendRequestVote(string playerName, long expireTime)
+        {
+            if (Settings.settingsStore.warpMode == WarpMode.MCW_FORCE || Settings.settingsStore.warpMode == WarpMode.MCW_VOTE)
+            {
+                ServerMessage newMessage = new ServerMessage();
+                newMessage.type = ServerMessageType.WARP_CONTROL;
+                using (MessageWriter mw = new MessageWriter())
+                {
+                    mw.Write<int>((int)WarpMessageType.REQUEST_VOTE);
+                    mw.Write<string>(playerName);
+                    mw.Write<long>(expireTime);
+                    newMessage.data = mw.GetMessageBytes();
+                }
+                ClientHandler.SendToAll(null, newMessage, true);
+            }
+        }
+
+        private static void SendSetController(string playerName, long expireTime)
+        {
+            if (Settings.settingsStore.warpMode == WarpMode.MCW_FORCE || Settings.settingsStore.warpMode == WarpMode.MCW_VOTE)
+            {
+                ServerMessage newMessage = new ServerMessage();
+                newMessage.type = ServerMessageType.WARP_CONTROL;
+                using (MessageWriter mw = new MessageWriter())
+                {
+                    mw.Write<int>((int)WarpMessageType.SET_CONTROLLER);
+                    mw.Write<string>(playerName);
+                    mw.Write<long>(expireTime);
+                    newMessage.data = mw.GetMessageBytes();
+                }
+                ClientHandler.SendToAll(null, newMessage, true);
+            }
+        }
+
         public static void SendSetSubspace(ClientObject client)
         {
             if (!Settings.settingsStore.keepTickingWhileOffline && ClientHandler.GetClients().Length == 1)
@@ -278,6 +381,17 @@ namespace DarkMultiPlayerServer.Messages
                 newMessage.data = mw.GetMessageBytes();
             }
             ClientHandler.SendToClient(client, newMessage, true);
+            //Tell everyone else they changed
+            ServerMessage changeMessage = new ServerMessage();
+            changeMessage.type = ServerMessageType.WARP_CONTROL;
+            using (MessageWriter mw = new MessageWriter())
+            {
+                mw.Write<int>((int)WarpMessageType.CHANGE_SUBSPACE);
+                mw.Write<string>(client.playerName);
+                mw.Write<int>(subspace);
+                changeMessage.data = mw.GetMessageBytes();
+            }
+            ClientHandler.SendToAll(client, changeMessage, true);
         }
 
         public static void SendSetSubspaceToAll(int subspace)
@@ -291,6 +405,23 @@ namespace DarkMultiPlayerServer.Messages
                 newMessage.data = mw.GetMessageBytes();
             }
             ClientHandler.SendToAll(null, newMessage, true);
+            //Tell everyone else they changed
+            foreach (ClientObject otherClient in ClientHandler.GetClients())
+            {
+                if (otherClient.authenticated)
+                {
+                    ServerMessage changeMessage = new ServerMessage();
+                    changeMessage.type = ServerMessageType.WARP_CONTROL;
+                    using (MessageWriter mw = new MessageWriter())
+                    {
+                        mw.Write<int>((int)WarpMessageType.CHANGE_SUBSPACE);
+                        mw.Write<string>(otherClient.playerName);
+                        mw.Write<int>(subspace);
+                        changeMessage.data = mw.GetMessageBytes();
+                    }
+                    ClientHandler.SendToAll(otherClient, changeMessage, true);
+                }
+            }
         }
 
         private static void LoadSavedSubspace()

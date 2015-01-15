@@ -650,5 +650,9 @@ namespace DarkMultiPlayer
             }
         }
     }
+
+    public class ThingPart : PartModule
+    {
+    }
 }
 

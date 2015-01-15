@@ -24,10 +24,9 @@ namespace DarkMultiPlayer
         private string warpMaster = "";
         private string voteMaster = "";
         private double controllerExpireTime = double.NegativeInfinity;
+        private double voteExpireTime = double.NegativeInfinity;
         private int voteYesCount;
         private int voteNoCount;
-        private int voteNeededCount;
-        private int voteFailedCount;
         private bool voteSent;
         private double lastScreenMessageCheck;
         //Report tracking
@@ -39,6 +38,22 @@ namespace DarkMultiPlayer
         private const float WARP_SET_THROTTLE = 1f;
         private const float REPORT_SKEW_RATE_INTERVAL = 10f;
         private const float RELEASE_AFTER_WARP_TIME = 10f;
+        //MCW Succeed/Fail counts.
+        private int voteNeededCount
+        {
+            get
+            {
+                return (PlayerStatusWorker.fetch.GetPlayerCount() + 1) / 2;
+            }
+        }
+        private int voteFailedCount
+        {
+            get
+            {
+
+                return voteNeededCount + (1 - (voteNeededCount % 2));
+            }
+        }
 
         public static WarpWorker fetch
         {
@@ -97,18 +112,15 @@ namespace DarkMultiPlayer
                                 //Our warp rate is different
 
                                 float[] warpRates = null;
-                                if ((TimeWarp.WarpMode == TimeWarp.Modes.LOW) != masterWarpRate.isPhysWarp)
+                                if (masterWarpRate.isPhysWarp)
                                 {
-                                    if (masterWarpRate.isPhysWarp)
-                                    {
-                                        TimeWarp.fetch.Mode = TimeWarp.Modes.LOW;
-                                        warpRates = TimeWarp.fetch.physicsWarpRates;
-                                    }
-                                    else
-                                    {
-                                        TimeWarp.fetch.Mode = TimeWarp.Modes.HIGH;
-                                        warpRates = TimeWarp.fetch.warpRates;
-                                    }
+                                    TimeWarp.fetch.Mode = TimeWarp.Modes.LOW;
+                                    warpRates = TimeWarp.fetch.physicsWarpRates;
+                                }
+                                else
+                                {
+                                    TimeWarp.fetch.Mode = TimeWarp.Modes.HIGH;
+                                    warpRates = TimeWarp.fetch.warpRates;
                                 }
 
                                 if (TimeWarp.CurrentRateIndex != masterWarpRate.rateIndex)
@@ -215,7 +227,8 @@ namespace DarkMultiPlayer
                 {
                     if (voteMaster == Settings.fetch.playerName)
                     {
-                        DisplayMessage("Waiting for vote replies... Yes: " + voteYesCount + ", No: " + voteNoCount + ", Needed: " + voteNeededCount, 1f);
+                        int timeLeft = (int)(voteExpireTime - UnityEngine.Time.realtimeSinceStartup);
+                        DisplayMessage("Waiting for vote replies... Yes: " + voteYesCount + ", No: " + voteNoCount + ", Needed: " + voteNeededCount + " (" + timeLeft + " left)", 1f);
                     }
                     else
                     {
@@ -284,7 +297,7 @@ namespace DarkMultiPlayer
                 mw.Write<float>(subspaceRate);
                 NetworkWorker.fetch.SendWarpMessage(mw.GetMessageBytes());
             }
-        }           
+        }
 
         private void HandleInput()
         {
@@ -337,33 +350,33 @@ namespace DarkMultiPlayer
                 {
                     if (startWarpKey)
                     {
-                            //Start a warp vote
-                            using (MessageWriter mw = new MessageWriter())
-                            {
-                                mw.Write<int>((int)WarpMessageType.REQUEST_CONTROLLER);
-                                NetworkWorker.fetch.SendWarpMessage(mw.GetMessageBytes());
-                            }
-                            //TODO
-                            //voteMaster = Settings.fetch.playerName;
-                            //To win:
-                            //1 other clients = 1 vote needed.
-                            //2 other clients = 1 vote needed.
-                            //3 other clients = 2 votes neeed.
-                            //4 other clients = 2 votes neeed.
-                            //5 other clients = 3 votes neeed.
-                            //To fail:
-                            //1 other clients = 1 vote needed.
-                            //2 other clients = 2 vote needed.
-                            //3 other clients = 2 votes neeed.
-                            //4 other clients = 3 votes neeed.
-                            //5 other clients = 3 votes neeed.
-                            //voteNeededCount = (PlayerStatusWorker.fetch.playerStatusList.Count + 1) / 2;
-                            //voteFailedCount = voteNeededCount + (1 - (voteNeededCount % 2));
-                            //DarkLog.Debug("Started warp vote");
-                            //Nobody else is online, Let's just take the warp master.
-                            //warpMasterOwnerTime = UnityEngine.Time.realtimeSinceStartup;
-                            //warpMaster = Settings.fetch.playerName;
-                            /*
+                        //Start a warp vote
+                        using (MessageWriter mw = new MessageWriter())
+                        {
+                            mw.Write<int>((int)WarpMessageType.REQUEST_CONTROLLER);
+                            NetworkWorker.fetch.SendWarpMessage(mw.GetMessageBytes());
+                        }
+                        //TODO
+                        //voteMaster = Settings.fetch.playerName;
+                        //To win:
+                        //1 other clients = 1 vote needed.
+                        //2 other clients = 1 vote needed.
+                        //3 other clients = 2 votes neeed.
+                        //4 other clients = 2 votes neeed.
+                        //5 other clients = 3 votes neeed.
+                        //To fail:
+                        //1 other clients = 1 vote needed.
+                        //2 other clients = 2 vote needed.
+                        //3 other clients = 2 votes neeed.
+                        //4 other clients = 3 votes neeed.
+                        //5 other clients = 3 votes neeed.
+                        //voteNeededCount = (PlayerStatusWorker.fetch.playerStatusList.Count + 1) / 2;
+                        //voteFailedCount = voteNeededCount + (1 - (voteNeededCount % 2));
+                        //DarkLog.Debug("Started warp vote");
+                        //Nobody else is online, Let's just take the warp master.
+                        //warpMasterOwnerTime = UnityEngine.Time.realtimeSinceStartup;
+                        //warpMaster = Settings.fetch.playerName;
+                        /*
                             using (MessageWriter mw = new MessageWriter())
                             {
                                 mw.Write<int>((int)WarpMessageType.RELEASE_CONTROLLER);
@@ -445,14 +458,13 @@ namespace DarkMultiPlayer
             using (MessageReader mr = new MessageReader(messageData))
             {
                 WarpMessageType messageType = (WarpMessageType)mr.Read<int>();
-                DarkLog.Debug("WARP MESSAGE TYPE: " + messageType.ToString());
                 switch (messageType)
                 {
                     case WarpMessageType.REQUEST_VOTE:
                         {
                             voteMaster = mr.Read<string>();
-                            voteNeededCount = mr.Read<int>();
-                            voteFailedCount = mr.Read<int>();
+                            long expireTime = mr.Read<long>();
+                            voteExpireTime = Time.realtimeSinceStartup + ((expireTime - TimeSyncer.fetch.GetServerClock()) / 10000000d);
                         }
                         break;
                     case WarpMessageType.REPLY_VOTE:
@@ -464,7 +476,8 @@ namespace DarkMultiPlayer
                     case WarpMessageType.SET_CONTROLLER:
                         {
                             string newController = mr.Read<string>();
-                            HandleSetController(newController);
+                            long expireTime = mr.Read<long>();
+                            HandleSetController(newController, expireTime);
                         }
                         break;
                     case WarpMessageType.CHANGE_WARP:
@@ -489,8 +502,11 @@ namespace DarkMultiPlayer
                     case WarpMessageType.CHANGE_SUBSPACE:
                         {
                             string fromPlayer = mr.Read<string>();
-                            int changeSubspaceID = mr.Read<int>();
-                            clientSubspaceList[fromPlayer] = changeSubspaceID;
+                            if (fromPlayer != Settings.fetch.playerName)
+                            {
+                                int changeSubspaceID = mr.Read<int>();
+                                clientSubspaceList[fromPlayer] = changeSubspaceID;
+                            }
                         }
                         break;
                     case WarpMessageType.RELOCK_SUBSPACE:
@@ -537,7 +553,7 @@ namespace DarkMultiPlayer
             }
         }
 
-        private void HandleSetController(string newController)
+        private void HandleSetController(string newController, long expireTime)
         {
             if (warpMode == WarpMode.MCW_FORCE || warpMode == WarpMode.MCW_VOTE || warpMode == WarpMode.MCW_LOWEST)
             {
@@ -547,10 +563,14 @@ namespace DarkMultiPlayer
                     voteMaster = "";
                     voteYesCount = 0;
                     voteNoCount = 0;
-                    voteNeededCount = 0;
-                    voteFailedCount = 0;
                     controllerExpireTime = double.NegativeInfinity;
                     TimeWarp.SetRate(0, true);
+                }
+                else
+                {
+                    long expireTimeDelta = expireTime - TimeSyncer.fetch.GetServerClock();
+                    controllerExpireTime = Time.realtimeSinceStartup + (expireTimeDelta / 10000000d);
+
                 }
             }
         }
@@ -598,23 +618,33 @@ namespace DarkMultiPlayer
 
         public List<int> GetActiveSubspaces()
         {
-            SortedList<double, int> sortedList = new SortedList<double, int>();
-            sortedList.Add(TimeSyncer.fetch.GetUniverseTime(), TimeSyncer.fetch.currentSubspace);
+            List<int> returnList = new List<int>();
+            returnList.Add(TimeSyncer.fetch.currentSubspace);
             foreach (KeyValuePair<string, int> clientSubspace in clientSubspaceList)
             {
-                if (!sortedList.ContainsValue(clientSubspace.Value))
+                if (!returnList.Contains(clientSubspace.Value))
                 {
-                    //Normal subspace
-                    sortedList.Add(TimeSyncer.fetch.GetUniverseTime(clientSubspace.Value), clientSubspace.Value);
+                    returnList.Add(clientSubspace.Value);
                 }
             }
-            List<int> returnList = new List<int>();
-            foreach (KeyValuePair<double, int> subspaceID in sortedList)
-            {
-                returnList.Add(subspaceID.Value);
-            }
-            returnList.Reverse();
+            returnList.Sort(subspaceComparer);
             return returnList;
+        }
+
+        private int subspaceComparer(int lhs, int rhs)
+        {
+            double subspace1Time = TimeSyncer.fetch.GetUniverseTime(lhs);
+            double subspace2Time = TimeSyncer.fetch.GetUniverseTime(rhs);
+            //x<y -1, x==y 0, x>y 1
+            if (subspace1Time < subspace2Time)
+            {
+                return -1;
+            }
+            if (subspace1Time == subspace2Time)
+            {
+                return 0;
+            }
+            return 1;
         }
 
         public List<string> GetClientsInSubspace(int subspace)
